@@ -1,30 +1,35 @@
-import { MongoClient } from 'mongodb'
+import pg from 'pg'
 import 'dotenv/config'
 
-const mongoUri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017'
-const databaseName = process.env.MONGODB_DB || 'abc_school'
+const { Pool } = pg
+const databaseUrl = process.env.DATABASE_URL || 'postgresql://postgres:postgres@127.0.0.1:5432/abc_school'
 
-let client
-let connectionPromise
+const pool = new Pool({
+  connectionString: databaseUrl,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined,
+  max: 10,
+  connectionTimeoutMillis: 10000,
+})
 
 export function getDatabase() {
-  if (!connectionPromise) {
-    client = new MongoClient(mongoUri, {
-      maxPoolSize: 10,
-      minPoolSize: 0,
-      connectTimeoutMS: 10000,
-      serverSelectionTimeoutMS: 5000,
-    })
-    connectionPromise = client.connect().then(() => client.db(databaseName))
-  }
+  return pool
+}
 
-  return connectionPromise
+export async function initializeDatabase() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id BIGSERIAL PRIMARY KEY,
+      role VARCHAR(20) NOT NULL,
+      username VARCHAR(100) NOT NULL,
+      password_hash TEXT NOT NULL,
+      name TEXT NOT NULL,
+      school TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (role, username)
+    )
+  `)
 }
 
 export async function closeDatabase() {
-  if (client) {
-    await client.close()
-    client = undefined
-    connectionPromise = undefined
-  }
+  await pool.end()
 }

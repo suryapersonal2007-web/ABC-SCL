@@ -2,7 +2,7 @@ import bcrypt from 'bcryptjs'
 import express from 'express'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { closeDatabase, getDatabase } from './db.js'
+import { closeDatabase, getDatabase, initializeDatabase } from './db.js'
 
 const app = express()
 const port = process.env.PORT || 3001
@@ -33,36 +33,25 @@ app.get('/', (_request, response) => {
   `)
 })
 
-async function usersCollection() {
-  const database = await getDatabase()
-  return database.collection('users')
-}
-
 async function seedDemoAccounts() {
-  const users = await usersCollection()
-  await users.createIndex({ role: 1, username: 1 }, { unique: true })
+  const database = getDatabase()
 
   for (const account of demoAccounts) {
-    const existingAccount = await users.findOne({ role: account.role, username: account.username })
-    if (!existingAccount) {
-      await users.insertOne({
-        role: account.role,
-        username: account.username,
-        passwordHash: await bcrypt.hash(account.password, 12),
-        name: account.name,
-        school: schoolName,
-        createdAt: new Date(),
-      })
-    }
+    const passwordHash = await bcrypt.hash(account.password, 12)
+    await database.query(`
+      INSERT INTO users (role, username, password_hash, name, school)
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (role, username) DO NOTHING
+    `, [account.role, account.username, passwordHash, account.name, schoolName])
   }
 }
 
 app.get('/api/health', async (_request, response) => {
   try {
-    await getDatabase()
-    response.json({ status: 'ok', database: 'mongodb', school: schoolName })
+    await getDatabase().query('SELECT 1')
+    response.json({ status: 'ok', database: 'postgresql', school: schoolName })
   } catch {
-    response.status(503).json({ status: 'error', message: 'MongoDB is unavailable.' })
+    response.status(503).json({ status: 'error', message: 'PostgreSQL is unavailable.' })
   }
 })
 
@@ -74,9 +63,12 @@ app.post('/api/login', async (request, response) => {
   }
 
   try {
-    const users = await usersCollection()
-    const account = await users.findOne({ role, username: username.trim().toLowerCase() })
-    const passwordMatches = account && await bcrypt.compare(password, account.passwordHash)
+    const { rows } = await getDatabase().query(
+      'SELECT role, name, password_hash FROM users WHERE role = $1 AND username = $2',
+      [role, username.trim().toLowerCase()],
+    )
+    const account = rows[0]
+    const passwordMatches = account && await bcrypt.compare(password, account.password_hash)
 
     if (!passwordMatches) {
       return response.status(401).json({ message: 'The login details do not match this account.' })
@@ -92,20 +84,25 @@ async function authenticateTeacher(request) {
   const authorization = request.headers.authorization || ''
   const encodedCredentials = authorization.startsWith('Basic ') ? authorization.slice(6) : ''
   const [teacherUsername, teacherPassword] = Buffer.from(encodedCredentials, 'base64').toString().split(':')
-  const users = await usersCollection()
-  const teacher = await users.findOne({ role: 'teacher', username: teacherUsername?.trim().toLowerCase() })
-  const matches = teacher && await bcrypt.compare(teacherPassword || '', teacher.passwordHash)
-  return matches ? users : null
+  const { rows } = await getDatabase().query(
+    'SELECT password_hash FROM users WHERE role = $1 AND username = $2',
+    ['teacher', teacherUsername?.trim().toLowerCase()],
+  )
+  const teacher = rows[0]
+  return teacher && await bcrypt.compare(teacherPassword || '', teacher.password_hash)
 }
 
 app.get('/api/students', async (request, response) => {
   try {
-    const users = await authenticateTeacher(request)
-    if (!users) {
+    const isTeacher = await authenticateTeacher(request)
+    if (!isTeacher) {
       return response.status(403).json({ message: 'Only an authenticated teacher can view student accounts.' })
     }
 
-    const students = await users.find({ role: 'student' }, { projection: { passwordHash: 0 } }).sort({ createdAt: -1 }).toArray()
+    const { rows: students } = await getDatabase().query(
+      'SELECT id, role, username, name, school, created_at AS "createdAt" FROM users WHERE role = $1 ORDER BY created_at DESC',
+      ['student'],
+    )
     return response.json({ students })
   } catch {
     return response.status(503).json({ message: 'The school database is unavailable.' })
@@ -114,8 +111,8 @@ app.get('/api/students', async (request, response) => {
 
 app.post('/api/students', async (request, response) => {
   try {
-    const users = await authenticateTeacher(request)
-    if (!users) {
+    const isTeacher = await authenticateTeacher(request)
+    if (!isTeacher) {
       return response.status(403).json({ message: 'Only an authenticated teacher can create student accounts.' })
     }
 
@@ -126,19 +123,14 @@ app.post('/api/students', async (request, response) => {
       return response.status(400).json({ message: 'Student name, username, and password are required.' })
     }
 
-    const student = {
-      role: 'student',
-      username: normalizedUsername,
-      passwordHash: await bcrypt.hash(password, 12),
-      name: name.trim(),
-      school: schoolName,
-      createdAt: new Date(),
-    }
-
-    await users.insertOne(student)
-    return response.status(201).json({ student: { name: student.name, username: student.username, school: schoolName } })
+    const { rows } = await getDatabase().query(`
+      INSERT INTO users (role, username, password_hash, name, school)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING name, username, school
+    `, ['student', normalizedUsername, await bcrypt.hash(password, 12), name.trim(), schoolName])
+    return response.status(201).json({ student: rows[0] })
   } catch (error) {
-    if (error.code === 11000) {
+    if (error.code === '23505') {
       return response.status(409).json({ message: 'That username is already in use.' })
     }
     return response.status(503).json({ message: 'The school database is unavailable.' })
@@ -156,10 +148,11 @@ if (process.env.NODE_ENV === 'production') {
 
 async function startServer() {
   try {
+    await initializeDatabase()
     await seedDemoAccounts()
     app.listen(port, () => console.log(`ABC School backend running at http://localhost:${port}`))
   } catch (error) {
-    console.error('Unable to connect to MongoDB:', error.message)
+    console.error('Unable to connect to PostgreSQL:', error.message)
     process.exitCode = 1
   }
 }
