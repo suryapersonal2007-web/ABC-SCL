@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import './App.css'
 
 function formatStudentName(value) {
@@ -19,6 +19,7 @@ function App() {
   const [createStudentError, setCreateStudentError] = useState('')
   const [createdStudent, setCreatedStudent] = useState(null)
   const [students, setStudents] = useState([])
+  const createStudentFormRef = useRef(null)
 
   const schoolName = 'ABC Nursery and Primary School, Madurai'
 
@@ -104,12 +105,17 @@ function App() {
 
   async function handleCreateStudent(event) {
     event.preventDefault()
-    const formData = new FormData(event.currentTarget)
+    const form = createStudentFormRef.current ?? event.currentTarget
+    const formData = new FormData(form)
     setIsCreatingStudent(true)
     setCreateStudentError('')
     setCreatedStudent(null)
 
     try {
+      if (!authCredentials) {
+        throw new Error('Your teacher session has expired. Please sign in again.')
+      }
+
       const credentials = btoa(`${authCredentials.username}:${authCredentials.password}`)
       const response = await fetch('/api/students', {
         method: 'POST',
@@ -119,7 +125,9 @@ function App() {
       const result = await response.json()
       if (!response.ok) throw new Error(result.message || 'Unable to create student account.')
       setCreatedStudent(result.student)
-      event.currentTarget.reset()
+      if (form && typeof form.reset === 'function') {
+        form.reset()
+      }
       await loadStudents(authCredentials.username, authCredentials.password)
     } catch (error) {
       setCreateStudentError(error.message || 'Unable to connect to the school server.')
@@ -162,7 +170,7 @@ function App() {
           </div>
 
           {signedIn ? (
-            <div className="success-message home-message" role="status"><div className="success-icon">&#10003;</div><p className="eyebrow">{role === 'student' ? 'Student home' : 'Teacher home'}</p><h3>Welcome, {accountName}</h3><p>Your {schoolName} {role === 'student' ? 'student' : 'teacher'} dashboard is ready.</p>{role === 'teacher' && <div className="faculty-tools"><div className="faculty-heading"><strong>Faculty tools</strong><span>Create as many student logins as needed</span></div><form onSubmit={handleCreateStudent}><label htmlFor="student-name">Student name</label><input id="student-name" name="student-name" type="text" placeholder="e.g. Kavya" required /><div className="faculty-fields"><div><label htmlFor="student-username">Username</label><input id="student-username" name="student-username" type="text" placeholder="e.g. kavya" required /></div><div><label htmlFor="student-password">Temporary password</label><input id="student-password" name="student-password" type="text" placeholder="Create password" required /></div></div>{createStudentError && <p className="login-error" role="alert">{createStudentError}</p>}{createdStudent && <p className="create-success" role="status">Login created for {createdStudent.name}: <strong>{createdStudent.username}</strong></p>}<button className="submit-button" type="submit" disabled={isCreatingStudent}>{isCreatingStudent ? 'Creating login...' : 'Create another student login'} <span aria-hidden="true">&#8594;</span></button></form><div className="student-list"><strong>Student accounts ({students.length})</strong>{students.map((student) => <div className="student-row" key={student._id}><span>{student.name}</span><small>{student.username}</small></div>)}</div></div>}<button type="button" className="text-button" onClick={() => { setSignedIn(false); setAuthCredentials(null); setStudents([]) }}>Sign out</button></div>
+            <div className="success-message home-message" role="status"><div className="success-icon">&#10003;</div><p className="eyebrow">{role === 'student' ? 'Student home' : 'Teacher home'}</p><h3>Welcome, {accountName}</h3><p>Your {schoolName} {role === 'student' ? 'student' : 'teacher'} dashboard is ready.</p>{role === 'teacher' && <div className="faculty-tools"><div className="faculty-heading"><strong>Faculty tools</strong><span>Create as many student logins as needed</span></div><form ref={createStudentFormRef} onSubmit={handleCreateStudent}><label htmlFor="student-name">Student name</label><input id="student-name" name="student-name" type="text" placeholder="e.g. Kavya" required /><div className="faculty-fields"><div><label htmlFor="student-username">Username</label><input id="student-username" name="student-username" type="text" placeholder="e.g. kavya" required /></div><div><label htmlFor="student-password">Temporary password</label><input id="student-password" name="student-password" type="text" placeholder="Create password" required /></div></div>{createStudentError && <p className="login-error" role="alert">{createStudentError}</p>}{createdStudent && <p className="create-success" role="status">Login created for {createdStudent.name}: <strong>{createdStudent.username}</strong></p>}<button className="submit-button" type="submit" disabled={isCreatingStudent}>{isCreatingStudent ? 'Creating login...' : 'Create another student login'} <span aria-hidden="true">&#8594;</span></button></form><div className="student-list"><strong>Student accounts ({students.length})</strong>{students.map((student) => <div className="student-row" key={student._id}><span>{student.name}</span><small>{student.username}</small></div>)}</div></div>}<button type="button" className="text-button" onClick={() => { setSignedIn(false); setAuthCredentials(null); setStudents([]) }}>Sign out</button></div>
           ) : (
             <form onSubmit={handleSubmit}>
               <label htmlFor="account-id">{role === 'student' ? 'Student name or ID' : 'Teacher name or ID'}</label>
